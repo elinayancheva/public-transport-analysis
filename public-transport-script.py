@@ -8,7 +8,11 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import folium
 from folium.plugins import HeatMap
-from sklearn.cluster import DBSCAN
+from sklearn.cluster import DBSCAN, KMeans
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import silhouette_score
+import numpy as np
+
 
 # %%
 df = pd.read_csv("data/transport_data.csv")
@@ -329,7 +333,9 @@ display(m2)
 # %%
 from folium.plugins import HeatMapWithTime
 
-m4 = folium.Map(location=[df["tap_lat"].mean(), df["tap_lon"].mean()], zoom_start=12)
+m4 = folium.Map(
+    location=[df["origin_stop_lat"].mean(), df["origin_stop_lon"].mean()], zoom_start=12
+)
 
 # Create a column for hour if it doesn't exist yet
 if "hour" not in df.columns and "dest_datetime" in df.columns:
@@ -346,7 +352,8 @@ for hour in range(24):
     hour_data = df[df["hour"] == hour]
 
     hour_heat_data = [
-        [row["tap_lat"], row["tap_lon"], 1] for _, row in hour_data.iterrows()
+        [row["origin_stop_lat"], row["origin_stop_lon"], 1]
+        for _, row in hour_data.iterrows()
     ]
     heat_data_by_hour.append(hour_heat_data)
 
@@ -366,7 +373,7 @@ HeatMapWithTime(
 title_html = """
 <div style="position: fixed; top: 10px; left: 50%; transform: translateX(-50%); 
 background-color: white; padding: 10px; border: 2px solid grey; border-radius: 5px; z-index: 1000;">
-<h3>Public Transport Usage by Hour</h3>
+<h3>Public Transport Usage by Hour (origin locations)</h3>
 </div>
 """
 m4.get_root().html.add_child(folium.Element(title_html))
@@ -376,3 +383,165 @@ display(m4)
 
 # %% [markdown]
 # # Clustering analysis
+
+# %%
+if "trip_duration" not in df.columns:
+    df["trip_duration_min"] = (
+        df["dest_ts"] - df["origin_ts"]
+    ) / 60_000  # 1 min = 60 000 ms
+
+
+# %%
+# Calculate distance between origin and destination using Haversine formula
+def haversine_distance(lat1, lon1, lat2, lon2):
+    """Calculate the Haversine distance between two points in kilometers"""
+    R = 6371  # Earth radius in kilometers
+
+    # convert latitude and longitude from degrees to radians
+    lat1_rad = np.radians(lat1)
+    lon1_rad = np.radians(lon1)
+    lat2_rad = np.radians(lat2)
+    lon2_rad = np.radians(lon2)
+
+    # Haversine formula
+    dlon = lon2_rad - lon1_rad
+    dlat = lat2_rad - lat1_rad
+    a = (
+        np.sin(dlat / 2) ** 2
+        + np.cos(lat1_rad) * np.cos(lat2_rad) * np.sin(dlon / 2) ** 2
+    )
+    c = 2 * np.arcsin(np.sqrt(a))
+    distance = R * c
+
+    return distance
+
+
+# %%
+# calculate direct distance between origin and destination
+df["direct_distance_km"] = df.apply(
+    lambda row: haversine_distance(
+        row["origin_stop_lat"],
+        row["origin_stop_lon"],
+        row["dest_stop_lat"],
+        row["dest_stop_lon"],
+    ),
+    axis=1,
+)
+
+# calculate travel speed (km/h)
+df["avg_speed_kmh"] = df["direct_distance_km"] / (df["trip_duration_min"] / 60)
+# N.B the distance is direct, not the actual travel distance
+
+# convert transport_type to numeric
+transport_type_mapping = {"bus": 0, "metro": 1, "trolleybus": 2, "tram": 3}
+df["transport_type_code"] = df["transport_type"].map(transport_type_mapping)
+
+df["is_transfer"] = df["is_transfer"].astype(int)
+
+# subset of features for clustering
+features = df[
+    [
+        "direct_distance_km",
+        "trip_duration_min",
+        "avg_speed_kmh",
+        "transport_type_code",
+        "is_transfer",
+        "hour_of_day",
+    ]
+]
+
+# %%
+print("\nMissing values in features:")
+print(features.isnull().sum())
+
+# %% [markdown]
+# ## Standardize the features
+# For example, without scaling, a 5-minute difference in trip duration (small relative to the ~24 minute range) would outweigh a change from no transfer to transfer (which is the maximum possible change in that feature).
+#
+# After standardization, all features are expressed in the same unit: standard deviations from the mean. This makes them directly comparable and ensures no feature dominates the distance calculations in algorithms like K-means simply because it has larger values.
+
+# %%
+scaler = StandardScaler()
+features_scaled = scaler.fit_transform(features)
+
+# %% [markdown]
+# ## K-means Clustering
+#
+# ### Determining the Optimal Number of Clusters
+
+# %%
+# Elbow method
+inertia = []
+silhouette_avg = []
+k_range = range(2, 10)
+
+for k in k_range:
+    print(f"Calculating KMeans for k={k}...")
+    kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
+    kmeans.fit(features_scaled)
+    inertia.append(kmeans.inertia_)
+
+    # Calculate Silhouette Score
+    labels = kmeans.labels_
+    silhouette_avg.append(silhouette_score(features_scaled, labels))
+
+# %%
+plt.figure(figsize=(12, 5))
+
+plt.subplot(1, 2, 1)
+plt.plot(k_range, inertia, "bo-")
+plt.xlabel("Number of Clusters")
+plt.ylabel("Inertia")
+plt.title("Elbow Method for Optimal k")
+plt.grid(True)
+
+plt.subplot(1, 2, 2)
+plt.plot(k_range, silhouette_avg, "ro-")
+plt.xlabel("Number of Clusters")
+plt.ylabel("Silhouette Score")
+plt.title("Silhouette Score for Optimal k")
+plt.grid(True)
+
+plt.tight_layout()
+plt.show()
+
+# %% [markdown]
+# From the **silhouette score plot**, we can see that:
+#
+# The highest silhouette score occurs at k=4 clusters. There's a secondary peak at k=6 clusters. The scores generally decrease after k=6
+#
+# From the **elbow method** plot:
+#
+# There's no sharp "elbow" point, but there's a gradual decrease in inertia. The rate of decrease noticeably slows around k=4 to k=5
+#
+# Given these observations, **k=4 appears to be the optimal choice**
+
+# %%
+optimal_k = 4
+kmeans = KMeans(n_clusters=optimal_k, random_state=42, n_init=10)
+df["kmeans_cluster"] = kmeans.fit_predict(features_scaled)
+
+cluster_centers = pd.DataFrame(
+    scaler.inverse_transform(kmeans.cluster_centers_), columns=features.columns
+)
+print("\nCluster Centers:")
+display(cluster_centers)
+
+# %% [markdown]
+# 1. **transport_type_code**: This column was originally encoded as 0 (bus), 1 (metro), and 2 (trolleybus), 3 (tram). After clustering, we're seeing decimal values like 0.902816, which indicates that Cluster 0 contains a mix of transport types, leaning slightly toward metro (1). Cluster 3 with 2.684802 suggests it contains predominantly trolleybus trips.
+#
+# 2. **is_transfer**: This was originally binary (0 or 1). The value 2.034468e-01 (0.2034) in Cluster 0 means approximately 20% of trips in this cluster involve transfers. The value 2.986500e-14 is effectively zero, meaning Cluster 1 has almost no transfers. Cluster 2 with exactly 1.0 consists entirely of transfers.
+#
+# 3. **hour_of_day**: The values (around 9-11) seem reasonable for morning/midday trips.
+#
+# These "strange" values occur because cluster centers represent the average of all points in a cluster.
+#
+# ### Cluster intrpretation
+#
+# - **Cluster 0**: Long-distance trips (7.3 km), longest duration (22.7 min), fastest speed (20.2 km/h), mix of transport types but mostly metro, 20% transfers, early morning (9.8 hour = 9:48 AM)
+#
+# - **Cluster 1**: Medium-distance trips (2.6 km), medium duration (10 min), medium speed (16.7 km/h), mostly metro, virtually no transfers, mid-morning (10.7 hour)
+#
+# - **Cluster 2**: Medium-distance trips (3.1 km), medium duration (11.1 min), medium-fast speed (17.3 km/h), mostly metro, 100% transfers, late morning (11.3 hour)
+#
+# - **Cluster 3**: Short-distance trips (2 km), shortest duration (9.2 min), slowest speed (14 km/h), predominantly trolley and tram, 36% transfers, mid-morning (11 hour)
