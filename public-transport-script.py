@@ -1,6 +1,6 @@
 # %% [markdown]
 # # Public transport analysis
-# By Elina Yancheva
+# Data Science project by Elina Yancheva
 
 # %%
 import pandas as pd
@@ -13,7 +13,6 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import silhouette_score
 import numpy as np
 
-
 # %%
 df = pd.read_csv("data/transport_data.csv")
 display(df.head())
@@ -22,50 +21,72 @@ print(df.columns)
 # %% [markdown]
 # # Data cleaning and preparation
 
-# %%
-# converting millisecond timestamps to datetime
-df["dest_datetime"] = pd.to_datetime(df["dest_ts"], unit="ms")
-df["hour_of_day"] = (
-    df["dest_datetime"].dt.hour if "dest_datetime" in df.columns else None
-)
-
-df["trip_duration_min"] = df["boarding_t"] / 60  # assuming boarding_t is in seconds
-
-for col in df.columns:
-    missing_pct = df[col].isnull().mean() * 100
-    if missing_pct > 0:
-        print(f"{col}: {missing_pct:.2f}% missing")
-
-# filter out invalid coordinates
-print(f"In total, {df.shape[0]} records")
-df = df[
-    (df["tap_lat"].between(42, 43)) & (df["tap_lon"].between(23, 24))
-]  # Bounds of Sofia region
-print(f"{df.shape[0]} records in Sofia region")
-
-df.head()
+# %% [markdown]
+# ## Invalid entries search
 
 # %%
-# Head of lines with missing og_line_id
-missing_og_line = df[df["og_line_id"].isnull()]
-print(missing_og_line["transport_type"].value_counts())
-print("---")
+print(f"Dataset shape: {df.shape}")
+
+invalid_data = {
+    # Bounds of Sofia region (latitude: 42-43, longitude: 23-24)
+    "tap_lat": sum((df["tap_lat"] < 42) | (df["tap_lat"] > 43) | df["tap_lat"].isna()),
+    "tap_lon": sum((df["tap_lon"] < 23) | (df["tap_lon"] > 24) | df["tap_lon"].isna()),
+    "origin_stop_lat": sum(
+        (df["origin_stop_lat"] < 42)
+        | (df["origin_stop_lat"] > 43)
+        | df["origin_stop_lat"].isna()
+    ),
+    "origin_stop_lon": sum(
+        (df["origin_stop_lon"] < 23)
+        | (df["origin_stop_lon"] > 24)
+        | df["origin_stop_lon"].isna()
+    ),
+    "dest_stop_lat": sum(
+        (df["dest_stop_lat"] < 42)
+        | (df["dest_stop_lat"] > 43)
+        | df["dest_stop_lat"].isna()
+    ),
+    "dest_stop_lon": sum(
+        (df["dest_stop_lon"] < 23)
+        | (df["dest_stop_lon"] > 24)
+        | df["dest_stop_lon"].isna()
+    ),
+    "boarding_t": sum(df["boarding_t"] < 0),
+    "transfer_t": sum(df["transfer_t"] < 0),
+    "boarding_dist": sum(df["boarding_dist"] < 0),
+    "transfer_dist": sum(df["transfer_dist"] < 0),
+}
+
+# percentage of invalid data
+total_cells = df.shape[0] * df.shape[1]
+total_invalid = sum(invalid_data.values())
+invalid_percentage = (total_invalid / total_cells) * 100
+
+print("\nInvalid data counts by specific validation rules:")
+for col, count in invalid_data.items():
+    if count > 0:
+        print(f"{col}: {count} invalid values ({(count / len(df)) * 100:.2f}%)")
+
+print(f"\nTotal cells in dataset: {total_cells}")
+print(f"Total invalid cells: {total_invalid}")
+print(f"Percentage of invalid data: {invalid_percentage:.2f}%")
+
+# origin timestamp should be before destination timestamp
+time_inconsistency = sum(df["origin_ts"] >= df["dest_ts"])
 print(
-    f"All metro records don't have og_line_id: \
-       {df[df['transport_type'] == 'metro']['og_line_id'].isnull().sum() == df[df['transport_type'] == 'metro'].shape[0]}"
+    f"\nRows with origin timestamp >= destination timestamp: {time_inconsistency} ({(time_inconsistency / len(df)) * 100:.2f}%)"
 )
 
-# %%
-# For each column with significant missing data, check transport type distribution
-for col in ["media_id", "product_id", "pan", "og_line_id", "task_id", "boarding_dist"]:
-    print(f"\nMissing {col} by transport type:")
-    print(df[df[col].isnull()]["transport_type"].value_counts())
+# duplicate IDs
+duplicate_ids = df["id"].duplicated().sum()
+print(f"Duplicate IDs: {duplicate_ids} ({(duplicate_ids / len(df)) * 100:.2f}%)")
 
 # %% [markdown]
-# Aparently, metro doesn't have information about boarding distance, task_id and line id.
+# ## Negative values search
+#  Check for negative values in numeric columns where negative values would be problematic
 
 # %%
-# Check for negative values in numeric columns where negative values would be problematic
+
 negative_value_checks = {}
 
 # Time-related variables shouldn't be negative
@@ -82,64 +103,190 @@ for col in ["boarding_dist", "transfer_dist"]:
         neg_pct = (df[col] < 0).mean() * 100 if neg_count > 0 else 0
         negative_value_checks[col] = {"count": neg_count, "percentage": neg_pct}
 
-# Coordinate variables (latitudes and longitudes) shouldn't be zero (not necessarily negative)
-# For this specific region, coordinates should be in a certain range
-for col in [
-    "tap_lat",
-    "tap_lon",
-    "origin_stop_lat",
-    "origin_stop_lon",
-    "dest_stop_lat",
-    "dest_stop_lon",
-]:
-    if col in df.columns:
-        zero_count = (df[col] == 0).sum()
-        zero_pct = (df[col] == 0).mean() * 100 if zero_count > 0 else 0
-        negative_value_checks[f"{col}_zero"] = {
-            "count": zero_count,
-            "percentage": zero_pct,
-        }
 
-# Print the results
 print("Negative Value Checks:")
 for col, stats in negative_value_checks.items():
     if stats["count"] > 0:
         print(f"{col}: {stats['count']} negative values ({stats['percentage']:.2f}%)")
 
-# For transfer time, also check for extreme negative values (potential severe data issues)
 if "transfer_t" in df.columns and (df["transfer_t"] < -600).sum() > 0:
     print(
         f"\nExtreme negative transfer times (< -10 min): {(df['transfer_t'] < -600).sum()} records"
     )
-    # Show a few examples of these problematic records
+    # examples of these problematic records
     print("\nSample of records with extremely negative transfer times:")
     print(
-        df[df["transfer_t"] < -600][
-            ["transport_type", "transfer_t", "is_transfer"]
-        ].head()
+        f"\nInvalid transfer times by transport type:\n {df[df['transfer_t'] <= 0]['transport_type'].value_counts()}"
     )
 
-# Check for logical inconsistencies
-# Transfers with zero transfer time
-if "transfer_t" in df.columns and "is_transfer" in df.columns:
-    zero_transfer_time = ((df["is_transfer"] == True) & (df["transfer_t"] == 0)).sum()
-    if zero_transfer_time > 0:
-        print(f"\nTransfers with zero transfer time: {zero_transfer_time} records")
 
-# Destination timestamp earlier than origin timestamp
-if "origin_ts" in df.columns and "dest_ts" in df.columns:
-    time_inconsistency = (df["dest_ts"] < df["origin_ts"]).sum()
-    if time_inconsistency > 0:
+# zero transfer time
+if "transfer_t" in df.columns and "is_transfer" in df.columns:
+    zero_transfer_time_count = (
+        (df["is_transfer"] == True) & (df["transfer_t"] == 0)
+    ).sum()
+    if zero_transfer_time_count > 0:
         print(
-            f"\nTrips where destination time is earlier than origin time: {time_inconsistency} records"
+            f"\nTransfers with zero transfer time: {zero_transfer_time_count} records"
         )
-        time_diff_minutes = (df["origin_ts"] - df["dest_ts"]).where(
-            df["dest_ts"] < df["origin_ts"]
-        ) / 60000  # convert ms to minutes
-        print(f"Average time inconsistency: {time_diff_minutes.mean():.2f} minutes")
 
 # %% [markdown]
-# strange why date and dest_ts are one year apart?
+# ## Duplicate IDs search
+
+# %%
+duplicate_ids = df["id"].value_counts()
+duplicate_ids = duplicate_ids[duplicate_ids > 1]
+
+print(f"Number of unique IDs that appear multiple times: {len(duplicate_ids)}")
+print(
+    f"Total number of rows with duplicate IDs: {sum(duplicate_ids) - len(duplicate_ids)}"
+)
+
+# For each duplicate ID, check if the rows are identical
+print("\nAnalyzing duplicate ID rows:")
+identical_dupes = 0
+different_dupes = 0
+dupe_analysis = {}
+
+for current_id in duplicate_ids.index:
+    id_rows = df[df["id"] == current_id]
+
+    # First, reset the index to avoid comparing index values
+    id_rows_reset = id_rows.reset_index(drop=True)
+
+    # Check if all rows are identical
+    all_identical = id_rows_reset.iloc[0:1].equals(id_rows_reset)
+
+    # If not all identical, find which columns differ
+    if not all_identical:
+        different_dupes += 1
+    else:
+        identical_dupes += 1
+
+print(f"\nOut of {len(duplicate_ids)} IDs with duplicates:")
+print(f"- {identical_dupes} IDs have completely identical rows")
+print(f"- {different_dupes} IDs have differences between rows")
+
+# are there multiple unique dates in the dataset
+unique_dates = df["date"].nunique()
+if unique_dates == 1:
+    print(f"The dataset contains a single date: {df['date'].iloc[0]}")
+else:
+    # check if duplicates occur within the same day
+    if "date" in df.columns:
+        same_day_dupes = 0
+        for current_id in duplicate_ids.index:
+            dates = df[df["id"] == current_id]["date"].unique()
+            if len(dates) == 1:
+                same_day_dupes += 1
+
+        print(
+            f"\nDuplicate IDs occurring on the same day: {same_day_dupes} ({same_day_dupes/len(duplicate_ids)*100:.1f}%)"
+        )
+        print(
+            f"Duplicate IDs occurring across different days: {len(duplicate_ids) - same_day_dupes} ({(len(duplicate_ids) - same_day_dupes)/len(duplicate_ids)*100:.1f}%)"
+        )
+
+# %% [markdown]
+# After analysis, we discovered that all duplicate IDs (13,230 unique IDs appearing 23,888 times) represent different transport journeys rather than identical data entries. Since these represent legitimate separate journeys maybe made by the same user/card, we will retain all rows in our analysis without filtering for unique IDs.
+
+# %%
+duplicate_id_values = duplicate_ids.index.tolist()
+
+df_duplicates = df[df["id"].isin(duplicate_id_values)]
+
+transfer_counts = df_duplicates["is_transfer"].value_counts(normalize=True) * 100
+
+all_transfers = df_duplicates.groupby("id")["is_transfer"].all().mean() * 100
+any_transfers = df_duplicates.groupby("id")["is_transfer"].any().mean() * 100
+none_transfers = (~df_duplicates.groupby("id")["is_transfer"].any()).mean() * 100
+
+print(f"Total rows with duplicate IDs: {len(df_duplicates)}")
+print(
+    f"Percentage of duplicate ID rows where is_transfer = True: {transfer_counts.get(True, 0):.2f}%"
+)
+print(
+    f"Percentage of duplicate ID rows where is_transfer = False: {transfer_counts.get(False, 0):.2f}%"
+)
+
+# transfer patterns by journey sequence
+print("\nAnalyzing transfer patterns by journey sequence:")
+sequence_patterns = {}
+
+for id_val in duplicate_ids.index:
+    # rows for this ID, SORTED BY ORIGIN TIMESTAMP
+    id_rows = df[df["id"] == id_val].sort_values("origin_ts")
+
+    # pattern of transfers (T = transfer, N = non-transfer)
+    pattern = "".join(["T" if x else "N" for x in id_rows["is_transfer"]])
+
+    if pattern in sequence_patterns:
+        sequence_patterns[pattern] += 1
+    else:
+        sequence_patterns[pattern] = 1
+
+print("\nMost common transfer patterns (T=transfer, N=non-transfer):")
+for pattern, count in sorted(
+    sequence_patterns.items(), key=lambda x: x[1], reverse=True
+)[:10]:
+    print(f"{pattern}: {count} IDs ({count/len(duplicate_ids)*100:.2f}%)")
+
+# %% [markdown]
+# ### Transfer Pattern Analysis for Duplicate IDs
+#
+# Analysis of the 37,118 journeys with duplicate IDs reveals that 46.61% involve transfers, with the most common pattern (34.01%) being a transfer followed by a non-transfer journey (TN). This suggests that many users make connected trips where they transfer once and then complete their journey directly, while the presence of various multi-segment patterns (TNT, TNN, TNTN) indicates more complex travel behaviors spanning multiple transit modes.
+
+# %% [markdown]
+# ## Missing values
+
+# %%
+# converting millisecond timestamps to datetime
+df["dest_datetime"] = pd.to_datetime(df["dest_ts"], unit="ms")
+df["hour_of_day"] = (
+    df["dest_datetime"].dt.hour if "dest_datetime" in df.columns else None
+)
+
+df["trip_duration_min"] = df["boarding_t"] / 60  # assuming boarding_t is in seconds
+
+for col in df.columns:
+    missing_pct = df[col].isnull().mean() * 100
+    if missing_pct > 0:
+        print(f"{col}: {missing_pct:.2f}% missing")
+
+df.head()
+
+# %%
+# Head of lines with missing og_line_id
+missing_og_line = df[df["og_line_id"].isnull()]
+print(missing_og_line["transport_type"].value_counts())
+print("---")
+print(
+    f"All metro records don't have og_line_id: \
+       {df[df['transport_type'] == 'metro']['og_line_id'].isnull().sum() == df[df['transport_type'] == 'metro'].shape[0]}"
+)
+
+# %%
+# for each column with significant missing data, check transport type distribution
+for col in ["media_id", "product_id", "pan", "og_line_id", "task_id", "boarding_dist"]:
+    print(f"\nMissing {col} by transport type:")
+    print(df[df[col].isnull()]["transport_type"].value_counts())
+
+# %% [markdown]
+# **Metro** has the most missing data across all fields, with complete absence of `product_id`, `og_line_id`, `task_id`, and `boarding_dist` values. This suggests metro journeys are tracked differently in the system.
+
+# %%
+print("Value counts for dest_datetime (date only):")
+print(df["dest_datetime"].dt.date.value_counts())
+
+print("\nValue counts for date:")
+print(df["date"].value_counts())
+
+# %% [markdown]
+# ### Date Inconsistency Analysis
+#
+# A critical data issue has been identified - while all records show the journey date as `2024-03-01`, the destination timestamps overwhelmingly resolve to `2025-03-01`  with two outliers on `2025-03-02` (maybe short after midnight). This one-year discrepancy between journey dates and destination timestamps indicates a systematic timestamp error.
+
+# %% [markdown]
 # # Exploratory data analysis
 
 # %% [markdown]
@@ -149,24 +296,30 @@ if "origin_ts" in df.columns and "dest_ts" in df.columns:
 df["transport_type"].value_counts()
 
 # %%
-# Removed 3 records (0.005% of dataset) with "unknown" transport type to ensure accurate transport-specific analysis.
+# drop 3 records (0.005% of dataset) with "unknown" transport type to ensure accurate transport-specific analysis.
 df = df[df["transport_type"] != "unknown"]
 
 # %%
-# So we'll convert all transport types to lower case to merge 'Tram' and 'tram' etc.
+# convert all transport types to lower case to merge 'Tram' and 'tram' etc.
 df["transport_type"] = df["transport_type"].str.lower()
 
 # %%
 transport_counts = df["transport_type"].value_counts()
-plt.figure(figsize=(10, 6))
-sns.barplot(x=transport_counts.index, y=transport_counts.values)
-plt.title("Distribution of Transport Types")
-plt.ylabel("Number of Trips")
-plt.xlabel("Transport Type")
-plt.xticks(rotation=45)
-# Add bar values
+
+fig, ax = plt.subplots(figsize=(10, 6), facecolor="#1f2937")
+ax.set_facecolor("#1f2937")
+
+sns.barplot(x=transport_counts.index, y=transport_counts.values, ax=ax)
+
+ax.set_title("Distribution of Transport Types", color="white")
+ax.set_xlabel("Transport Type", color="white")
+ax.set_ylabel("Number of Trips", color="white")
+ax.tick_params(colors="white")
+
+# Add bar values (with white text)
 for i, v in enumerate(transport_counts.values):
-    plt.text(i, v + 5, str(v), ha="center", va="bottom")
+    ax.text(i, v + 5, str(v), ha="center", va="bottom", color="white")
+
 plt.tight_layout()
 plt.show()
 
@@ -174,6 +327,32 @@ plt.show()
 # ## Trip timing analysis
 
 # %%
+
+df["origin_datetime"] = pd.to_datetime(df["origin_ts"], unit="ms")
+# extract hour from timestamp if not already done
+if "hour_of_day" not in df.columns:
+    df["hour_of_day"] = df["origin_datetime"].dt.hour
+
+hourly_by_transport = (
+    df.groupby(["hour_of_day", "transport_type"]).size().unstack(fill_value=0)
+)
+
+# Bar chart of total journeys by hour
+hourly_total = df.groupby("hour_of_day").size()
+
+plt.figure(figsize=(12, 6))
+ax = hourly_total.plot(kind="bar", color="skyblue")
+plt.title("Total Journeys by Hour of Day", fontsize=14)
+plt.xlabel("Hour of Day", fontsize=12)
+plt.ylabel("Number of Journeys", fontsize=12)
+plt.grid(True, axis="y", alpha=0.3)
+plt.tight_layout()
+
+for i, v in enumerate(hourly_total):
+    ax.text(i, v + 0.1, str(v), ha="center")
+
+plt.show()
+
 if "hour_of_day" in df.columns and df["hour_of_day"] is not None:
     hourly_trips = (
         df.groupby(["hour_of_day", "transport_type"]).size().unstack().fillna(0)
@@ -186,7 +365,8 @@ if "hour_of_day" in df.columns and df["hour_of_day"] is not None:
     plt.xticks(range(0, 24))
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
-    plt.show("hourly_trips.png")
+    plt.show()
+
 
 # %% [markdown]
 # ### Transport Usage Analysis Summary
@@ -219,12 +399,12 @@ plt.legend()
 plt.tight_layout()
 plt.show()
 
-# Transfer time analysis
+# transfer time analysis
 if "transfer_t" in df.columns:
     # Filter for trips with transfers and avoid invalid transfer times
     transfer_trips = df[df["is_transfer"] == True & (df["transfer_t"] > 0)]
 
-    # Transfer time by transport type
+    # transfer time by transport type
     plt.figure(figsize=(10, 6))
     sns.boxplot(x="transport_type", y="transfer_t", data=transfer_trips)
     plt.title("Transfer Time by Transport Type")
@@ -234,16 +414,15 @@ if "transfer_t" in df.columns:
     plt.tight_layout()
     plt.show()
 
-    # Calculate efficiency metrics
+    # efficiency metrics
     avg_transfer_time = df[df["is_transfer"]]["transfer_t"].mean() / 60  # minutes
     print(f"Average transfer waiting time: {avg_transfer_time:.2f} minutes")
 
-# Transfer disance analysis
+# transfer disance analysis
 if "transfer_dist" in df.columns:
-    # Filter for trips with transfers
     transfer_trips = df[df["is_transfer"] == True]
 
-    # Transfer distance by transport type
+    # transfer distance by transport type
     plt.figure(figsize=(10, 6))
     sns.boxplot(x="transport_type", y="transfer_dist", data=transfer_trips)
     plt.title("Transfer Distance by Transport Type")
@@ -253,26 +432,26 @@ if "transfer_dist" in df.columns:
     plt.tight_layout()
     plt.show()
 
-    # Calculate efficiency metrics
+    # calculate efficiency metrics
     avg_transfer_distance = (
         df[df["is_transfer"]]["transfer_dist"].mean() / 1000
     )  # kilometers
     print(f"Average transfer distance: {avg_transfer_distance:.2f} kilometers")
 
 # %% [markdown]
-# # Transfer Analysis Insights
+# ## Transfer Analysis Insights
 #
-# ## Transfer Frequency
+# ### Transfer Frequency
 # - **Bus** has the highest transfer rate at ~44%, significantly above the overall average of 36.2%.
 # - **Metro** has the lowest transfer rate at ~34%, suggesting it may serve more direct routes or complete journeys.
 # - **Tram** and **Trolleybus** show transfer rates close to or slightly below the overall average.
 #
-# ## Transfer Time
+# ### Transfer Time
 # - **Transfer times** typically range from ~150-750 seconds (2.5-12.5 minutes) across all transport types.
 # - **Tram** shows the highest median transfer time, suggesting potentially less frequent service.
 # - **Metro** displays notable outliers with some negative transfer times, indicating potential data quality issues or system timing anomalies.
 #
-# ## Transfer Distance
+# ### Transfer Distance
 # - **Trolleybus** transfers involve the longest distances (median ~100m).
 # - **Metro** shows a weird distribution with many transfers happening at very short distances (0-1m) but also having numerous outliers stretching to 500m.
 # - **Bus** and **Tram** show similar distance distributions with medians around 75-100m.
@@ -380,6 +559,94 @@ m4.get_root().html.add_child(folium.Element(title_html))
 
 m4.save("hourly_heatmap.html")
 display(m4)
+
+# %% [markdown]
+# # Commuters vs occasional users
+
+# %%
+# Segment users based on frequency, assuming 'pan' is the user identifier
+user_freq = df.groupby("pan").size().reset_index(name="journey_count")
+user_freq["user_type"] = pd.cut(
+    user_freq["journey_count"],
+    bins=[0, 2, 4, 10, float("inf")],
+    labels=["One-time", "Regular", "Frequent", "Very Frequent"],
+    right=False,  # Ensure the bins are inclusive on the left
+)
+# Ensure 'user_type' is a categorical column
+user_freq["user_type"] = user_freq["user_type"].astype("category")
+
+for label in user_freq["user_type"].cat.categories:
+    if label == "One-time":
+        print(f"{label}: Users who traveled only once.")
+    elif label == "Regular":
+        print(f"{label}: Users who traveled 2-3 times.")
+    elif label == "Frequent":
+        print(f"{label}: Users who traveled 4-9 times.")
+    elif label == "Very Frequent":
+        print(f"{label}: Users who traveled more than 10 times.\n")
+
+# count users in each segment
+user_segment_counts = user_freq["user_type"].value_counts().sort_index()
+print("User segments based on journey count:")
+for segment, count in user_segment_counts.items():
+    print(f"{segment}: {count} users ({count/len(user_freq)*100:.1f}%)")
+
+# join user frequency
+df = df.merge(user_freq[["pan", "journey_count", "user_type"]], on="pan", how="left")
+
+# extract hour and determine if peak hours
+df["hour"] = df["origin_datetime"].dt.hour
+df["is_morning_peak"] = df["hour"].between(6, 9)
+df["is_evening_peak"] = df["hour"].between(16, 19)
+df["is_peak_hour"] = df["is_morning_peak"] | df["is_evening_peak"]
+
+# Identify commuter patterns
+# Commuters: Users who travel back from origin to destination
+user_commute_ratio = (
+    df.groupby("pan")
+    .agg(
+        morning_peak=("is_morning_peak", "any"), evening_peak=("is_evening_peak", "any")
+    )
+    .reset_index()
+)
+
+user_commute_ratio.head()
+user_commute_ratio["is_commuter"] = (
+    user_commute_ratio["morning_peak"] & user_commute_ratio["evening_peak"]
+)
+print(
+    f"\nCommuter ratio: {user_commute_ratio['is_commuter'].mean() * 100:.2f}% of users are commuters"
+)
+
+
+# %%
+total = user_segment_counts.sum()
+percentages = (user_segment_counts / total) * 100
+
+# filter out segments with less than 1%
+filtered_counts = user_segment_counts[percentages >= 1]
+
+plt.figure(figsize=(8, 8), facecolor="#1f2937")
+explode = [0.05] * len(filtered_counts)
+
+
+def autopct_func(pct):
+    return "{:.1f}%".format(pct) if pct >= 1 else ""
+
+
+ax = filtered_counts.plot.pie(
+    autopct=autopct_func,
+    startangle=90,
+    counterclock=False,
+    explode=explode,
+    textprops={"color": "white"},
+    figsize=(8, 8),
+)
+ax.set_facecolor("#1f2937")
+plt.title("Distribution of Users by Journey Frequency", color="white")
+plt.ylabel("")
+plt.show()
+
 
 # %% [markdown]
 # # Clustering analysis
@@ -545,3 +812,174 @@ display(cluster_centers)
 # - **Cluster 2**: Medium-distance trips (3.1 km), medium duration (11.1 min), medium-fast speed (17.3 km/h), mostly metro, 100% transfers, late morning (11.3 hour)
 #
 # - **Cluster 3**: Short-distance trips (2 km), shortest duration (9.2 min), slowest speed (14 km/h), predominantly trolley and tram, 36% transfers, mid-morning (11 hour)
+
+# %% [markdown]
+# ## DBSCAN Clustering
+# DBSCAN is good for spatial data and can find clusters of arbitrary shape
+
+# %%
+# For large datasets, we're using a sample for initial parameter tuning
+sample_size = 5000  # Use a 5000-point sample for initial tuning
+sample_indices = np.random.choice(len(df), sample_size, replace=False)
+df_sample = df.iloc[sample_indices].copy()
+
+features_cols = [
+    "direct_distance_km",
+    "trip_duration_min",
+    "avg_speed_kmh",
+    "transport_type_code",
+    "is_transfer",
+    "hour_of_day",
+]
+
+features_sample = df_sample[features_cols]
+scaler = StandardScaler()
+features_sample_scaled = scaler.fit_transform(features_sample)
+
+# For a large dataset, appropriate parameter ranges:
+# 1. eps: Should be smaller than for small datasets
+# 2. min_samples: Should be larger to avoid excessive fragmentation
+
+eps_values = [0.1, 0.2, 0.3, 0.5, 0.7, 1.0]
+min_samples_values = [10, 20, 50, 100, 200]
+
+print(
+    f"Testing {len(eps_values) * len(min_samples_values)} parameter combinations on {sample_size} sample points..."
+)
+
+results = []
+
+# grid search
+for eps in eps_values:
+    for min_samples in min_samples_values:
+        dbscan = DBSCAN(eps=eps, min_samples=min_samples)
+        labels = dbscan.fit_predict(features_sample_scaled)
+
+        # number of clusters excluding noise points with label -1
+        n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
+        n_noise = list(labels).count(-1)
+
+        # skip cases with 1 cluster or all points as noise
+        if n_clusters < 2 or n_noise == len(labels):
+            silhouette = np.nan
+        else:
+            # filter out noise points for silhouette calculation
+            mask = labels != -1
+            try:
+                silhouette = silhouette_score(
+                    features_sample_scaled[mask], labels[mask]
+                )
+            except:
+                silhouette = np.nan
+
+        results.append(
+            {
+                "eps": eps,
+                "min_samples": min_samples,
+                "n_clusters": n_clusters,
+                "n_noise": n_noise,
+                "noise_ratio": n_noise / len(labels),
+                "silhouette": silhouette,
+            }
+        )
+
+
+results_df = pd.DataFrame(results)
+
+print("Top DBSCAN Parameter Combinations:")
+display(results_df.sort_values("silhouette", ascending=False).head(10))
+
+heatmap_clusters = results_df.pivot(
+    index="eps", columns="min_samples", values="n_clusters"
+)
+heatmap_silhouette = results_df.pivot(
+    index="eps", columns="min_samples", values="silhouette"
+)
+heatmap_noise = results_df.pivot(
+    index="eps", columns="min_samples", values="noise_ratio"
+)
+
+fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+
+sns.heatmap(heatmap_clusters, annot=True, cmap="viridis", ax=axes[0], fmt="d")
+axes[0].set_title("Number of Clusters")
+axes[0].set_xlabel("min_samples")
+axes[0].set_ylabel("eps")
+
+# Silhouette score
+sns.heatmap(heatmap_silhouette, annot=True, cmap="RdYlGn", ax=axes[1], fmt=".3f")
+axes[1].set_title("Silhouette Score")
+axes[1].set_xlabel("min_samples")
+axes[1].set_ylabel("eps")
+
+# Noise ratio
+sns.heatmap(heatmap_noise, annot=True, cmap="Reds", ax=axes[2], fmt=".2f")
+axes[2].set_title("Noise Ratio")
+axes[2].set_xlabel("min_samples")
+axes[2].set_ylabel("eps")
+
+plt.tight_layout()
+plt.show()
+
+
+# %%
+# Filter results - not too many/few clusters, not too much noise
+filtered_results = results_df[
+    (results_df["n_clusters"] >= 3)
+    & (results_df["n_clusters"] <= 10)
+    & (results_df["noise_ratio"] < 0.3)
+    & (~results_df["silhouette"].isna())
+]
+display(filtered_results.sort_values("silhouette", ascending=False))
+
+# %%
+if not filtered_results.empty:
+    # Sort by silhouette score
+    filtered_results = filtered_results.sort_values(
+        "silhouette", ascending=False
+    ).reset_index(drop=True)
+    best_result = filtered_results.iloc[0]
+    # Now apply to the full dataset
+    print("\nApplying optimal parameters to full dataset...")
+
+    # Prepare the full dataset
+    features_full = df[features_cols]
+    features_full = features_full.fillna(features_full.mean())
+    features_full_scaled = scaler.transform(features_full)
+
+    optimal_dbscan = DBSCAN(
+        eps=best_result["eps"],
+        min_samples=int(best_result["min_samples"]),
+        n_jobs=-1,  # Use all available cores for faster processing
+    )
+    df["dbscan_cluster"] = optimal_dbscan.fit_predict(features_full_scaled)
+
+    n_clusters_full = len(set(df["dbscan_cluster"])) - (
+        1 if -1 in df["dbscan_cluster"] else 0
+    )
+    n_noise_full = list(df["dbscan_cluster"]).count(-1)
+
+    print(f"Number of clusters in full dataset: {n_clusters_full}")
+    print(f"Noise points in full dataset: {n_noise_full} ({n_noise_full/len(df):.2%})")
+
+    cluster_sizes = df["dbscan_cluster"].value_counts().sort_index()
+    print("\nCluster sizes:")
+    display(cluster_sizes)
+
+    try:
+        cluster_stats = df.groupby("dbscan_cluster").agg(
+            {
+                "direct_distance_km": ["mean", "std"],
+                "trip_duration_min": ["mean", "std"],
+                "avg_speed_kmh": ["mean", "std"],
+                "is_transfer": "mean",
+                "hour_of_day": "mean",
+            }
+        )
+
+        print("\nCluster statistics:")
+        display(cluster_stats)
+    except:
+        print(
+            "Could not calculate all cluster statistics. Adjust the column names as needed."
+        )
