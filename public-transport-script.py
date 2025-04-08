@@ -498,7 +498,7 @@ plt.show()
 # - Metro volumes significantly exceed all other transportation types
 
 # %% [markdown]
-# # Transfer analysis
+# ## Transfer Analysis
 
 # %%
 transfer_stats = df.groupby("transport_type")["is_transfer"].mean() * 100
@@ -558,19 +558,19 @@ if "transfer_dist" in df.columns:
     print(f"Average transfer distance: {avg_transfer_distance:.2f} kilometers")
 
 # %% [markdown]
-# ## Transfer Analysis Insights
+# ### Transfer Analysis Insights
 #
-# ### Transfer Frequency
+# #### Transfer Frequency
 # - **Bus** has the highest transfer rate at ~44%, significantly above the overall average of 36.2%.
 # - **Metro** has the lowest transfer rate at ~34%, suggesting it may serve more direct routes or complete journeys.
 # - **Tram** and **Trolleybus** show transfer rates close to or slightly below the overall average.
 #
-# ### Transfer Time
+# #### Transfer Time
 # - **Transfer times** typically range from ~150-750 seconds (2.5-12.5 minutes) across all transport types.
 # - **Tram** shows the highest median transfer time, suggesting potentially less frequent service.
 # - **Metro** displays notable outliers with some negative transfer times, indicating potential data quality issues or system timing anomalies.
 #
-# ### Transfer Distance
+# #### Transfer Distance
 # - **Trolleybus** transfers involve the longest distances (median ~100m).
 # - **Metro** shows a weird distribution with many transfers happening at very short distances (0-1m) but also having numerous outliers stretching to 500m.
 # - **Bus** and **Tram** show similar distance distributions with medians around 75-100m.
@@ -578,7 +578,7 @@ if "transfer_dist" in df.columns:
 # These patterns suggest that while metro is the dominant transport mode, bus connections play a crucial role in the overall network connectivity. The presence of negative transfer times and the unusual metro distance distribution suggest further investigation into data quality and how transfers are recorded in the system.
 
 # %% [markdown]
-# # Geospatial analysis
+# ## Geospatial analysis
 
 # %%
 # create a map of all trip origins
@@ -623,7 +623,6 @@ for transport, color in transport_colors.items():
 legend_html += "</div>"
 
 m2.get_root().html.add_child(folium.Element(legend_html))
-m2.save("transport_type_map.html")
 
 display(m)
 display(m2)
@@ -675,8 +674,6 @@ background-color: white; padding: 10px; border: 2px solid grey; border-radius: 5
 </div>
 """
 m4.get_root().html.add_child(folium.Element(title_html))
-
-m4.save("hourly_heatmap.html")
 display(m4)
 
 # %% [markdown]
@@ -838,6 +835,8 @@ plt.show()
 
 # %% [markdown]
 # # Clustering analysis
+#
+# Applying clustering techniques to identify distinct patterns in public transport usage that might not be apparent through simple statistical analysis. Clustering helps discover natural groupings in the data based on multiple features simultaneously (trip duration, distance, speed, transport type, transfers, and time of day).
 
 # %%
 if "trip_duration" not in df.columns:
@@ -882,10 +881,10 @@ df["direct_distance_km"] = df.apply(
     ),
     axis=1,
 )
+# N.B the distance is direct, not the actual travel distance
 
 # calculate travel speed (km/h)
 df["avg_speed_kmh"] = df["direct_distance_km"] / (df["trip_duration_min"] / 60)
-# N.B the distance is direct, not the actual travel distance
 
 # convert transport_type to numeric
 transport_type_mapping = {"bus": 0, "metro": 1, "trolleybus": 2, "tram": 3}
@@ -921,6 +920,9 @@ features_scaled = scaler.fit_transform(features)
 
 # %% [markdown]
 # ## K-means Clustering
+# - works well with the numerical features in this dataset (distance, duration, speed)
+# - It creates a fixed number of clusters with similar sizes, which helps identify major trip categories
+# - It's computationally efficient for large datasets
 #
 # ### Determining the Optimal Number of Clusters
 
@@ -961,6 +963,7 @@ plt.tight_layout()
 plt.show()
 
 # %% [markdown]
+#
 # From the **silhouette score plot**, we can see that:
 #
 # The highest silhouette score occurs at k=4 clusters. There's a secondary peak at k=6 clusters. The scores generally decrease after k=6
@@ -983,11 +986,7 @@ print("\nCluster Centers:")
 display(cluster_centers)
 
 # %% [markdown]
-# 1. **transport_type_code**: This column was originally encoded as 0 (bus), 1 (metro), and 2 (trolleybus), 3 (tram). After clustering, we're seeing decimal values like 0.902816, which indicates that Cluster 0 contains a mix of transport types, leaning slightly toward metro (1). Cluster 3 with 2.684802 suggests it contains predominantly trolleybus trips.
-#
-# 2. **is_transfer**: This was originally binary (0 or 1). The value 2.034468e-01 (0.2034) in Cluster 0 means approximately 20% of trips in this cluster involve transfers. The value 2.986500e-14 is effectively zero, meaning Cluster 1 has almost no transfers. Cluster 2 with exactly 1.0 consists entirely of transfers.
-#
-# 3. **hour_of_day**: The values (around 9-11) seem reasonable for morning/midday trips.
+# 1. **transport_type_code**: This column was originally encoded as 0 (bus), 1 (metro), and 2 (trolleybus), 3 (tram). After clustering, we're seeing decimal values like 0.902816, which indicates that Cluster 0 contains a mix of transport types, leaning slightly toward metro (1). Cluster 3 with 2.684802 suggests it contains predominantly trolleybus and tram trips.
 #
 # These "strange" values occur because cluster centers represent the average of all points in a cluster.
 #
@@ -1003,7 +1002,10 @@ display(cluster_centers)
 
 # %% [markdown]
 # ## DBSCAN Clustering
-# DBSCAN is good for spatial data and can find clusters of arbitrary shape
+# DBSCAN (Density-Based Spatial Clustering of Applications with Noise) because:
+# - It can discover clusters of arbitrary shape, which is valuable for temporal patterns in transport data
+# - It doesn't require pre-specifying the number of clusters
+# - It effectively identifies outliers as "noise" points, which helps isolate unusual travel patterns
 
 # %%
 # For large datasets, we're using a sample for initial parameter tuning
@@ -1132,7 +1134,6 @@ if not filtered_results.empty:
 
     # Prepare the full dataset
     features_full = df[features_cols]
-    features_full = features_full.fillna(features_full.mean())
     features_full_scaled = scaler.transform(features_full)
 
     optimal_dbscan = DBSCAN(
@@ -1171,3 +1172,8 @@ if not filtered_results.empty:
         print(
             "Could not calculate all cluster statistics. Adjust the column names as needed."
         )
+
+# %% [markdown]
+# # Conclusion
+#
+# This analysis of Sofia's public transport system reveals distinct usage patterns characterized by four primary journey profiles, with metro being the dominant transit mode and showing clear morning and mid-day peak periods, due to the weekend. The clustering methods effectively identified trip segments ranging from long-distance, high-speed metro journeys to shorter, slower surface transit trips, providing valuable insights for future service planning and optimization.
