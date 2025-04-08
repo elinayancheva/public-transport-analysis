@@ -5,6 +5,7 @@
 # %%
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator
 import seaborn as sns
 import folium
 from folium.plugins import HeatMap
@@ -12,6 +13,8 @@ from sklearn.cluster import DBSCAN, KMeans
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import silhouette_score
 import numpy as np
+import re
+import warnings
 
 # %%
 df = pd.read_csv("data/transport_data.csv")
@@ -105,16 +108,11 @@ for col in ["boarding_dist", "transfer_dist"]:
 
 
 print("Negative Value Checks:")
-for col, stats in negative_value_checks.items():
-    if stats["count"] > 0:
-        print(f"{col}: {stats['count']} negative values ({stats['percentage']:.2f}%)")
-
 if "transfer_t" in df.columns and (df["transfer_t"] < -600).sum() > 0:
     print(
         f"\nExtreme negative transfer times (< -10 min): {(df['transfer_t'] < -600).sum()} records"
     )
     # examples of these problematic records
-    print("\nSample of records with extremely negative transfer times:")
     print(
         f"\nInvalid transfer times by transport type:\n {df[df['transfer_t'] <= 0]['transport_type'].value_counts()}"
     )
@@ -188,7 +186,7 @@ else:
         )
 
 # %% [markdown]
-# After analysis, we discovered that all duplicate IDs (13,230 unique IDs appearing 23,888 times) represent different transport journeys rather than identical data entries. Since these represent legitimate separate journeys maybe made by the same user/card, we will retain all rows in our analysis without filtering for unique IDs.
+# All duplicate IDs (13,230 unique IDs appearing 23,888 times) represent different transport journeys rather than identical data entries. Since these represent legitimate separate journeys might have been made by the same user/card, we will retain all rows in our analysis without filtering for unique IDs.
 
 # %%
 duplicate_id_values = duplicate_ids.index.tolist()
@@ -233,8 +231,9 @@ for pattern, count in sorted(
 
 # %% [markdown]
 # ### Transfer Pattern Analysis for Duplicate IDs
+# Check if all duplicate ids involve transfers, to check if a single journey with many segments is represented by multiple rows or if they are different journeys with the same ID.
 #
-# Analysis of the 37,118 journeys with duplicate IDs reveals that 46.61% involve transfers, with the most common pattern (34.01%) being a transfer followed by a non-transfer journey (TN). This suggests that many users make connected trips where they transfer once and then complete their journey directly, while the presence of various multi-segment patterns (TNT, TNN, TNTN) indicates more complex travel behaviors spanning multiple transit modes.
+# Analysis of the 37,118 journeys with duplicate IDs reveals that 46.61% involve transfers, with the most common pattern (34.01%) being a transfer followed by a non-transfer journey (TN). This suggests that many users make connected trips where they transfer once and then complete their journey directly, while the presence of various multi-segment patterns (TNT, TNN, TNTN) indicates more complex travel behaviors spanning multiple transit modes. The following analysis assumes that all duplicate IDs represent different journeys, by the same person.
 
 # %% [markdown]
 # ## Missing values
@@ -284,7 +283,7 @@ print(df["date"].value_counts())
 # %% [markdown]
 # ### Date Inconsistency Analysis
 #
-# A critical data issue has been identified - while all records show the journey date as `2024-03-01`, the destination timestamps overwhelmingly resolve to `2025-03-01`  with two outliers on `2025-03-02` (maybe short after midnight). This one-year discrepancy between journey dates and destination timestamps indicates a systematic timestamp error.
+# While all records show the journey date as `2024-03-01`, the destination timestamps overwhelmingly resolve to `2025-03-01`  with two outliers on `2025-03-02` (maybe short after midnight). This one-year difference between `date` (journey dates) and destination timestamps indicates a systematic timestamp error.
 
 # %% [markdown]
 # # Exploratory data analysis
@@ -324,49 +323,169 @@ plt.tight_layout()
 plt.show()
 
 # %% [markdown]
+# ## Transport type distribution by line number
+
+# %%
+warnings.filterwarnings("ignore", message="The figure layout has changed to tight")
+
+plt.style.use("ggplot")
+sns.set_palette("Set2")
+
+transport_types = ["bus", "tram", "trolleybus"]
+filtered_df = df[df["transport_type"].isin(transport_types)].copy()
+
+
+def extract_line_number(row):
+    """Extract numeric part from line_id based on transport type"""
+    line_id = str(row["og_line_id"])
+    # Extract numbers from the line_id
+    matches = re.findall(r"\d+", line_id)
+    if matches:
+        return matches[0]  # Return the first number found
+    return line_id  # Return original if no number found
+
+
+filtered_df.loc[:, "line_number"] = filtered_df.apply(extract_line_number, axis=1)
+
+print("\nMost Frequent Line IDs by Transport Type")
+
+results = {}
+for transport_type in transport_types:
+    if transport_type in filtered_df["transport_type"].values:
+        # Filter current transport type
+        type_df = filtered_df[filtered_df["transport_type"] == transport_type]
+
+        # Count line_number frequencies
+        line_counts = type_df["line_number"].value_counts()
+
+        results[transport_type] = line_counts
+    else:
+        print(f"\nNo data available for {transport_type}")
+
+plt.figure(figsize=(10, 10))
+
+for i, transport_type in enumerate(results.keys(), 1):
+    if len(results[transport_type]) > 0:
+        top_lines = results[transport_type].head(5)
+
+        plt.subplot(len(results), 1, i)
+
+        bars = plt.bar(top_lines.index.astype(str), top_lines.values)
+
+        for bar in bars:
+            height = bar.get_height()
+            plt.text(
+                bar.get_x() + bar.get_width() / 2.0,
+                height + 0.1,
+                f"{int(height)}",
+                ha="center",
+                va="bottom",
+            )
+
+        plt.title(
+            f"Top 5 Most Frequent {transport_type.capitalize()} Lines", fontsize=13
+        )
+        plt.xlabel("Line Number", fontsize=11)
+        plt.ylabel("Frequency", fontsize=11)
+        plt.xticks(rotation=45)
+        plt.gca().yaxis.set_major_locator(MaxNLocator(integer=True))
+        plt.grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.show()
+
+combined_data = []
+for transport_type, line_counts in results.items():
+    if len(line_counts) > 0:
+        top_5 = line_counts.head(5)
+        for line_id, count in top_5.items():
+            combined_data.append(
+                {
+                    "Transport Type": transport_type,
+                    "Line Number": str(line_id),
+                    "Frequency": count,
+                }
+            )
+
+combined_df = pd.DataFrame(combined_data)
+
+if len(combined_df) > 0:
+    plt.figure(figsize=(10, 7))
+
+    ax = sns.barplot(
+        x="Transport Type", y="Frequency", hue="Line Number", data=combined_df
+    )
+
+    plt.title("Top 5 Most Frequent Lines by Transport Type", fontsize=15)
+    plt.xlabel("Transport Type", fontsize=13)
+    plt.ylabel("Frequency", fontsize=13)
+    plt.legend(title="Line Number", bbox_to_anchor=(1.05, 1), loc="upper left")
+
+    plt.tight_layout()
+    plt.show()
+
+print("\n Summary of the day")
+for transport_type in results.keys():
+    if len(results[transport_type]) > 0:
+        top_line = results[transport_type].idxmax()
+        top_count = results[transport_type].max()
+        total_trips = results[transport_type].sum()
+        top_percentage = (top_count / total_trips) * 100
+
+        print(f"\n{transport_type.capitalize()}:")
+        print(
+            f"- Most frequent line: {top_line} with {top_count} trips ({top_percentage:.1f}% of all {transport_type} trips)"
+        )
+        print(f"- Total number of unique lines: {len(results[transport_type])}")
+        print(f"- Total trips recorded: {total_trips}")
+
+# %% [markdown]
 # ## Trip timing analysis
 
 # %%
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
 
+# Convert timestamp to datetime
 df["origin_datetime"] = pd.to_datetime(df["origin_ts"], unit="ms")
-# extract hour from timestamp if not already done
+
+# Extract hour from timestamp if not already done
 if "hour_of_day" not in df.columns:
     df["hour_of_day"] = df["origin_datetime"].dt.hour
 
+# Calculate hourly distribution by transport type
 hourly_by_transport = (
     df.groupby(["hour_of_day", "transport_type"]).size().unstack(fill_value=0)
 )
 
-# Bar chart of total journeys by hour
 hourly_total = df.groupby("hour_of_day").size()
 
-plt.figure(figsize=(12, 6))
-ax = hourly_total.plot(kind="bar", color="skyblue")
-plt.title("Total Journeys by Hour of Day", fontsize=14)
-plt.xlabel("Hour of Day", fontsize=12)
-plt.ylabel("Number of Journeys", fontsize=12)
-plt.grid(True, axis="y", alpha=0.3)
-plt.tight_layout()
+fig1, ax1 = plt.subplots(figsize=(12, 6))
+hourly_total.plot(kind="bar", color="skyblue", ax=ax1)
+ax1.set_title("Total Journeys by Hour of Day", fontsize=14)
+ax1.set_xlabel("Hour of Day", fontsize=12)
+ax1.set_ylabel("Number of Journeys", fontsize=12)
+ax1.grid(True, axis="y", alpha=0.3)
 
+# Add text labels
 for i, v in enumerate(hourly_total):
-    ax.text(i, v + 0.1, str(v), ha="center")
+    ax1.text(i, v + 0.1, str(v), ha="center")
 
+plt.tight_layout()
 plt.show()
 
-if "hour_of_day" in df.columns and df["hour_of_day"] is not None:
-    hourly_trips = (
-        df.groupby(["hour_of_day", "transport_type"]).size().unstack().fillna(0)
-    )
-    plt.figure(figsize=(12, 6))
-    hourly_trips.plot(kind="line", marker="o")
-    plt.title("Hourly Trip Distribution by Transport Type")
-    plt.xlabel("Hour of Day")
-    plt.ylabel("Number of Trips")
-    plt.xticks(range(0, 24))
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.show()
+fig2, ax2 = plt.subplots(figsize=(8, 6))
+hourly_trips = df.groupby(["hour_of_day", "transport_type"]).size().unstack().fillna(0)
+hourly_trips.plot(kind="line", marker="o", ax=ax2)
+ax2.set_title("Hourly Trip Distribution by Transport Type")
+ax2.set_xlabel("Hour of Day")
+ax2.set_ylabel("Number of Trips")
+ax2.set_xticks(range(0, 24))
+ax2.grid(True, alpha=0.3)
 
+plt.tight_layout()
+plt.show()
 
 # %% [markdown]
 # ### Transport Usage Analysis Summary
@@ -563,9 +682,55 @@ display(m4)
 # %% [markdown]
 # # Commuters vs occasional users
 
+# %% [markdown]
+# ## User identifiers
+
 # %%
-# Segment users based on frequency, assuming 'pan' is the user identifier
-user_freq = df.groupby("pan").size().reset_index(name="journey_count")
+media_type_counts = df["media_type"].value_counts()
+print("Records by media type:")
+display(media_type_counts)
+
+summary_df = pd.DataFrame(columns=["Media Type", "Has PAN", "Has Media ID"])
+
+print("\nDistribution by Media Type and ID Type:")
+distribution_df = pd.DataFrame(index=df["media_type"].unique())
+
+# records with PAN for each media type
+distribution_df["With PAN"] = [
+    df[(df["media_type"] == mt) & (df["pan"].notna())].shape[0]
+    for mt in distribution_df.index
+]
+
+# records with media_id for each media type
+if "media_id" in df.columns:
+    distribution_df["With Media ID"] = [
+        df[(df["media_type"] == mt) & (df["media_id"].notna())].shape[0]
+        for mt in distribution_df.index
+    ]
+
+distribution_df["Total Records"] = [
+    df[df["media_type"] == mt].shape[0] for mt in distribution_df.index
+]
+display(distribution_df)
+
+# %% [markdown]
+# Summary of user identifiers:
+# - EMV cards use PAN (payment card numbers)
+# - Desfire and ULC cards use Media ID
+# - No card type uses both identifiers
+# - all cards have unique identifiers
+
+# %% [markdown]
+# Combine both identifiers into a single column for analysis.
+
+# %%
+df["user_identifier"] = df.apply(
+    lambda row: row["pan"] if pd.notna(row["pan"]) else row["media_id"], axis=1
+)
+
+# %%
+# Segment users based on frequency
+user_freq = df.groupby("user_identifier").size().reset_index(name="journey_count")
 user_freq["user_type"] = pd.cut(
     user_freq["journey_count"],
     bins=[0, 2, 4, 10, float("inf")],
@@ -592,7 +757,11 @@ for segment, count in user_segment_counts.items():
     print(f"{segment}: {count} users ({count/len(user_freq)*100:.1f}%)")
 
 # join user frequency
-df = df.merge(user_freq[["pan", "journey_count", "user_type"]], on="pan", how="left")
+df = df.merge(
+    user_freq[["user_identifier", "journey_count", "user_type"]],
+    on="user_identifier",
+    how="left",
+)
 
 # extract hour and determine if peak hours
 df["hour"] = df["origin_datetime"].dt.hour
@@ -603,7 +772,7 @@ df["is_peak_hour"] = df["is_morning_peak"] | df["is_evening_peak"]
 # Identify commuter patterns
 # Commuters: Users who travel back from origin to destination
 user_commute_ratio = (
-    df.groupby("pan")
+    df.groupby("user_identifier")
     .agg(
         morning_peak=("is_morning_peak", "any"), evening_peak=("is_evening_peak", "any")
     )
@@ -618,6 +787,16 @@ print(
     f"\nCommuter ratio: {user_commute_ratio['is_commuter'].mean() * 100:.2f}% of users are commuters"
 )
 
+
+# %%
+# Analyze EMV card usage compared to other types
+card_type_counts = df["media_type"].value_counts()
+total_users = len(df)
+emv_percentage = (card_type_counts.get("EMV", 0) / total_users) * 100
+other_percentage = 100 - emv_percentage
+
+print(f"EMV card usage: {emv_percentage:.1f}%")
+print(f"Other card types: {other_percentage:.1f}%")
 
 # %%
 total = user_segment_counts.sum()
@@ -647,6 +826,15 @@ plt.title("Distribution of Users by Journey Frequency", color="white")
 plt.ylabel("")
 plt.show()
 
+
+# %% [markdown]
+# ## Weekend Public Transport Usage Patterns
+#
+# The Saturday data reveals predominantly one-time travelers (58.8%) and regular users making 2-3 trips (33.1%), with significantly fewer frequent users (8.0%) and very few very frequent users (10+ trips) at just 0.1%.
+#
+# This distribution is typical for weekend travel, with the low commuter ratio (2.34%) reflecting weekend-specific behavior. Most weekend passengers are making targeted leisure trips, shopping excursions, or social visits rather than the repetitive commuting patterns seen on weekdays.
+#
+# Just 23.6% of travelers used EMV cards (typically occasional users paying standard fares), while the vast majority (76.4%) used specialized transit cards, suggesting most weekend travelers are still regular or subscription-holding passengers despite the reduced commuter pattern.
 
 # %% [markdown]
 # # Clustering analysis
