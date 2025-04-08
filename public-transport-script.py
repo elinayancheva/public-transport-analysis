@@ -19,7 +19,11 @@ import warnings
 # %%
 df = pd.read_csv("data/transport_data.csv")
 display(df.head())
-print(df.columns)
+
+# %%
+print("DataFrame Columns:")
+for col in df.columns:
+    print(" -", col)
 
 # %% [markdown]
 # # Data cleaning and preparation
@@ -252,8 +256,6 @@ for col in df.columns:
     if missing_pct > 0:
         print(f"{col}: {missing_pct:.2f}% missing")
 
-df.head()
-
 # %%
 # Head of lines with missing og_line_id
 missing_og_line = df[df["og_line_id"].isnull()]
@@ -424,6 +426,8 @@ if len(combined_df) > 0:
     plt.tight_layout()
     plt.show()
 
+
+# %%
 print("\n Summary of the day")
 for transport_type in results.keys():
     if len(results[transport_type]) > 0:
@@ -443,10 +447,6 @@ for transport_type in results.keys():
 # ## Trip timing analysis
 
 # %%
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-
 # Convert timestamp to datetime
 df["origin_datetime"] = pd.to_datetime(df["origin_ts"], unit="ms")
 
@@ -475,6 +475,7 @@ for i, v in enumerate(hourly_total):
 plt.tight_layout()
 plt.show()
 
+# %%
 fig2, ax2 = plt.subplots(figsize=(8, 6))
 hourly_trips = df.groupby(["hour_of_day", "transport_type"]).size().unstack().fillna(0)
 hourly_trips.plot(kind="line", marker="o", ax=ax2)
@@ -518,6 +519,8 @@ plt.legend()
 plt.tight_layout()
 plt.show()
 
+
+# %%
 # transfer time analysis
 if "transfer_t" in df.columns:
     # Filter for trips with transfers and avoid invalid transfer times
@@ -536,6 +539,8 @@ if "transfer_t" in df.columns:
     # efficiency metrics
     avg_transfer_time = df[df["is_transfer"]]["transfer_t"].mean() / 60  # minutes
     print(f"Average transfer waiting time: {avg_transfer_time:.2f} minutes")
+
+# %%
 
 # transfer disance analysis
 if "transfer_dist" in df.columns:
@@ -587,7 +592,6 @@ m = folium.Map(location=[df["tap_lat"].mean(), df["tap_lon"].mean()], zoom_start
 # heatmap layer
 heat_data = [[row["tap_lat"], row["tap_lon"]] for _, row in df.iterrows()]
 HeatMap(heat_data).add_to(m)
-m.save("trip_origin_heatmap.html")
 
 transport_colors = {
     "bus": "blue",
@@ -625,6 +629,8 @@ legend_html += "</div>"
 m2.get_root().html.add_child(folium.Element(legend_html))
 
 display(m)
+
+# %%
 display(m2)
 
 # %%
@@ -1079,6 +1085,8 @@ results_df = pd.DataFrame(results)
 print("Top DBSCAN Parameter Combinations:")
 display(results_df.sort_values("silhouette", ascending=False).head(10))
 
+# %%
+
 heatmap_clusters = results_df.pivot(
     index="eps", columns="min_samples", values="n_clusters"
 )
@@ -1090,7 +1098,6 @@ heatmap_noise = results_df.pivot(
 )
 
 fig, axes = plt.subplots(1, 3, figsize=(18, 6))
-
 sns.heatmap(heatmap_clusters, annot=True, cmap="viridis", ax=axes[0], fmt="d")
 axes[0].set_title("Number of Clusters")
 axes[0].set_xlabel("min_samples")
@@ -1110,7 +1117,6 @@ axes[2].set_ylabel("eps")
 
 plt.tight_layout()
 plt.show()
-
 
 # %%
 # Filter results - not too many/few clusters, not too much noise
