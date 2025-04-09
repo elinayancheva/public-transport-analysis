@@ -9,6 +9,7 @@ from matplotlib.ticker import MaxNLocator
 import seaborn as sns
 import folium
 from folium.plugins import HeatMap
+from folium.plugins import HeatMapWithTime
 from sklearn.cluster import DBSCAN, KMeans
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import silhouette_score
@@ -85,6 +86,20 @@ duplicate_ids = df["id"].duplicated().sum()
 print(f"Duplicate IDs: {duplicate_ids} ({(duplicate_ids / len(df)) * 100:.2f}%)")
 
 # %% [markdown]
+# ## Unify case
+
+# %%
+df["transport_type"].value_counts()
+
+# %%
+# drop 3 records (0.005% of dataset) with "unknown" transport type to ensure accurate transport-specific analysis.
+df = df[df["transport_type"] != "unknown"]
+
+# %%
+# convert all transport types to lower case to merge 'Tram' and 'tram' etc.
+df["transport_type"] = df["transport_type"].str.lower()
+
+# %% [markdown]
 # ## Negative values search
 #  Check for negative values in numeric columns where negative values would be problematic
 
@@ -112,7 +127,6 @@ if "transfer_t" in df.columns and (df["transfer_t"] < -600).sum() > 0:
     print(
         f"\nExtreme negative transfer times (< -10 min): {(df['transfer_t'] < -600).sum()} records"
     )
-    # examples of these problematic records
     print(
         f"\nInvalid transfer times by transport type:\n {df[df['transfer_t'] <= 0]['transport_type'].value_counts()}"
     )
@@ -179,10 +193,10 @@ else:
                 same_day_dupes += 1
 
         print(
-            f"\nDuplicate IDs occurring on the same day: {same_day_dupes} ({same_day_dupes/len(duplicate_ids)*100:.1f}%)"
+            f"\nDuplicate IDs occurring on the same day: {same_day_dupes} ({same_day_dupes / len(duplicate_ids) * 100:.1f}%)"
         )
         print(
-            f"Duplicate IDs occurring across different days: {len(duplicate_ids) - same_day_dupes} ({(len(duplicate_ids) - same_day_dupes)/len(duplicate_ids)*100:.1f}%)"
+            f"Duplicate IDs occurring across different days: {len(duplicate_ids) - same_day_dupes} ({(len(duplicate_ids) - same_day_dupes) / len(duplicate_ids) * 100:.1f}%)"
         )
 
 # %% [markdown]
@@ -194,10 +208,6 @@ duplicate_id_values = duplicate_ids.index.tolist()
 df_duplicates = df[df["id"].isin(duplicate_id_values)]
 
 transfer_counts = df_duplicates["is_transfer"].value_counts(normalize=True) * 100
-
-all_transfers = df_duplicates.groupby("id")["is_transfer"].all().mean() * 100
-any_transfers = df_duplicates.groupby("id")["is_transfer"].any().mean() * 100
-none_transfers = (~df_duplicates.groupby("id")["is_transfer"].any()).mean() * 100
 
 print(f"Total rows with duplicate IDs: {len(df_duplicates)}")
 print(
@@ -245,8 +255,6 @@ df["hour_of_day"] = (
     df["dest_datetime"].dt.hour if "dest_datetime" in df.columns else None
 )
 
-df["trip_duration_min"] = df["boarding_t"] / 60  # assuming boarding_t is in seconds
-
 for col in df.columns:
     missing_pct = df[col].isnull().mean() * 100
     if missing_pct > 0:
@@ -292,17 +300,6 @@ print(df["date"].value_counts())
 # ## Transport type distribution
 
 # %%
-df["transport_type"].value_counts()
-
-# %%
-# drop 3 records (0.005% of dataset) with "unknown" transport type to ensure accurate transport-specific analysis.
-df = df[df["transport_type"] != "unknown"]
-
-# %%
-# convert all transport types to lower case to merge 'Tram' and 'tram' etc.
-df["transport_type"] = df["transport_type"].str.lower()
-
-# %%
 transport_counts = df["transport_type"].value_counts()
 
 fig, ax = plt.subplots(figsize=(10, 6), facecolor="#1f2937")
@@ -334,7 +331,6 @@ sns.set_palette("Set2")
 transport_types = ["bus", "tram", "trolleybus"]
 filtered_df = df[df["transport_type"].isin(transport_types)].copy()
 
-
 def extract_line_number(row):
     """Extract numeric part from line_id based on transport type"""
     line_id = str(row["og_line_id"])
@@ -343,7 +339,6 @@ def extract_line_number(row):
     if matches:
         return matches[0]  # Return the first number found
     return line_id  # Return original if no number found
-
 
 filtered_df.loc[:, "line_number"] = filtered_df.apply(extract_line_number, axis=1)
 
@@ -443,14 +438,8 @@ for transport_type in results.keys():
 # ## Trip timing analysis
 
 # %%
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-
-# Convert timestamp to datetime
 df["origin_datetime"] = pd.to_datetime(df["origin_ts"], unit="ms")
 
-# Extract hour from timestamp if not already done
 if "hour_of_day" not in df.columns:
     df["hour_of_day"] = df["origin_datetime"].dt.hour
 
@@ -490,11 +479,8 @@ plt.show()
 # %% [markdown]
 # ### Transport Usage Analysis Summary
 #
-# **Transport Type Distribution:**
-# - Metro dominates with ~37,000 trips (70%+), followed by bus (~5,800 trips)
-#
 # **Hourly Usage Patterns:**
-# - Clear morning peak (8-10) and evening peak (16-19) for all transport modes
+# - Clear morning peak (8-12) for all transport modes
 # - Metro volumes significantly exceed all other transportation types
 
 # %% [markdown]
@@ -512,7 +498,7 @@ plt.axhline(
     color="red",
     linestyle="--",
     alpha=0.7,
-    label=f'Overall Average: {df["is_transfer"].mean()*100:.1f}%',
+    label=f"Overall Average: {df['is_transfer'].mean() * 100:.1f}%",
 )
 plt.legend()
 plt.tight_layout()
@@ -587,7 +573,6 @@ m = folium.Map(location=[df["tap_lat"].mean(), df["tap_lon"].mean()], zoom_start
 # heatmap layer
 heat_data = [[row["tap_lat"], row["tap_lon"]] for _, row in df.iterrows()]
 HeatMap(heat_data).add_to(m)
-m.save("trip_origin_heatmap.html")
 
 transport_colors = {
     "bus": "blue",
@@ -628,8 +613,6 @@ display(m)
 display(m2)
 
 # %%
-from folium.plugins import HeatMapWithTime
-
 m4 = folium.Map(
     location=[df["origin_stop_lat"].mean(), df["origin_stop_lon"].mean()], zoom_start=12
 )
@@ -839,10 +822,9 @@ plt.show()
 # Applying clustering techniques to identify distinct patterns in public transport usage that might not be apparent through simple statistical analysis. Clustering helps discover natural groupings in the data based on multiple features simultaneously (trip duration, distance, speed, transport type, transfers, and time of day).
 
 # %%
-if "trip_duration" not in df.columns:
-    df["trip_duration_min"] = (
-        df["dest_ts"] - df["origin_ts"]
-    ) / 60_000  # 1 min = 60 000 ms
+df["trip_duration_min"] = (
+    df["dest_ts"] - df["origin_ts"]
+) / 60_000  # 1 min = 60 000 ms
 
 
 # %%
@@ -1149,7 +1131,9 @@ if not filtered_results.empty:
     n_noise_full = list(df["dbscan_cluster"]).count(-1)
 
     print(f"Number of clusters in full dataset: {n_clusters_full}")
-    print(f"Noise points in full dataset: {n_noise_full} ({n_noise_full/len(df):.2%})")
+    print(
+        f"Noise points in full dataset: {n_noise_full} ({n_noise_full / len(df):.2%})"
+    )
 
     cluster_sizes = df["dbscan_cluster"].value_counts().sort_index()
     print("\nCluster sizes:")
